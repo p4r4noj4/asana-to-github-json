@@ -5,9 +5,8 @@ Script getting all needed data from Asana through Asana API and transforming it 
 
 ## Requirements
 
-Your [Asana API key](https://app.asana.com/-/account_api).
-
-[Asana API wrapper for Python](https://github.com/pandemicsyn/asana).
+ * Your [Asana API key](https://app.asana.com/-/account_api)
+ * [Asana API wrapper for Python](https://github.com/pandemicsyn/asana)
 
 ## Usage
 
