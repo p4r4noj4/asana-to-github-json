@@ -4,6 +4,7 @@ from __future__ import print_function
 from asana import asana
 from optparse import OptionParser
 from os import path
+import os
 import simplejson
 
 
@@ -22,12 +23,16 @@ def get_workspace_id(asana_api, workspace_name=None):
 
 
 def get_project_id(asana_api, workspace_id, project_name=None):
-    pass
+    projects_d = dict([(project["name"], project["id"]) for project in asana_api.list_projects(workspace_id)])
+    if not project_name:
+        __script_print("Available projects:\n" + "\n".join(projects_d.keys()))
+        return None
+    else:
+        return projects_d[project_name]
 
 
-def get_project_tasks(asana_api, project_id):
-    tasks = reversed(asana_api.get_project_tasks(project_id))
-    pass
+def get_project_tasks(asana_api, project_id, copy_completed=False):
+    return [z for z in reversed([asana.get_task(x) for x in asana_api.get_project_tasks(project_id)])if copy_completed or not z['completed']]
 
 
 def main():
@@ -38,14 +43,18 @@ def main():
     parser.add_option("-o", "--output", action="store", type="string", dest="directory_name", default=".", help="main directory name for output files")
     parser.add_option("-p", "--project", action="store", type="string", dest="project_name", help="asana project name to be used")
     parser.add_option("-w", "--workspace", action="store", type="string", dest="workspace_name", help="asana workspace name to be used")
-    parser.add_option("-c", "--completed", action="store_true", dest="copy_completed", default=False, help="copy completed tasks as well")
+    parser.add_option("-c", "--copy-completed", action="store_true", dest="copy_completed", default=False, help="copy completed tasks as well")
     parser.add_option("-n", "--number", action="store", type="int", dest="number", default=1, help="from what number should issues' ids start")
     parser.add_option("-q", "--quiet", action="store_false", dest="verbose", help="quiet mode")
     parser.add_option("-v", "--verbose", action="store_true", dest="verbose", default=True, help="verbose mode (default)")
+    parser.add_option("-d", "--dictionary", action="store", type="string", dest="dictionary_file", default=None, help="python file containing dictionary for translating Asana users to Github users; "
+                                                                                                                      "by default e-mail addresses are used in Github to search for users")
+    parser.add_option("-u", "--user", action="store", type="string", dest="default_user", default=None, help="default name of user which should be user as creator of issue if "
+                                                                                                             "dictionary look-up fails (by default it's going to be import requester's name)")
     options, args = parser.parse_args()
 
     if len(args) != 1:
-        parser.error("incorrect number of arguments")
+        parser.error("Asana API key missing")
 
     asana_api = asana.AsanaAPI(args[0])
     number = options.number
@@ -53,19 +62,30 @@ def main():
     if options.verbose:
         __verbose_print = print
 
+    __verbose_print("Looking through workspaces")
     workspace_id = get_workspace_id(asana_api, options.workspace_name)
     if not workspace_id:
         exit()
+    __verbose_print("Workspace {0} found".format(options.workspace_name))
 
+    __verbose_print("Looking through projects")
     project_id = get_project_id(asana_api, workspace_id, options.project_name)
+    if not project_id:
+        exit()
+    __verbose_print("Project {0} found".format(options.project_name))
 
-    tasks_ids = get_project_tasks(asana_api, project_id)
+    __verbose_print("Getting list of tasks")
+    tasks_ids = get_project_tasks(asana_api, project_id, options.copy_completed)
 
     assignee_dict = {}
+
+    if not path.exists(options.directory_name):
+        os.makedirs(options.directory_name)
+
     for t in tasks_ids:
         t_id = t['id']
-        __verbose_print("Writing task '" + t['name'] + "'")
         task = asana_api.get_task(t_id)
+        __verbose_print("Writing task '" + task['name'] + "'")
         stories = asana_api.list_stories(t_id)
         issue_dict = {
             "number": number,
