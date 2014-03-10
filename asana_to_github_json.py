@@ -2,8 +2,10 @@
 
 from __future__ import print_function
 from asana import asana
+from collections import defaultdict
 from optparse import OptionParser
 from os import path
+
 import os
 import simplejson
 
@@ -32,7 +34,42 @@ def get_project_id(asana_api, workspace_id, project_name=None):
 
 
 def get_project_tasks(asana_api, project_id, copy_completed=False):
-    return [z for z in reversed([asana.get_task(x) for x in asana_api.get_project_tasks(project_id)])if copy_completed or not z['completed']]
+    return [z for z in reversed([asana_api.get_task(x['id']) for x in asana_api.get_project_tasks(project_id)]) if copy_completed or not z['completed']]
+
+
+def get_user_email(asana_api, user_id):
+    return asana_api.user_info(user_id)['email']
+
+
+def write_task(task, filename, creator, number=0, label=None, milestone=None, assignee=None):
+    issue_dict = {
+        "number": number,
+        "title": "",
+        "body": "",
+        "created_at": None,
+        "updated_at": None,
+        "closed_at": None,
+        "user": creator,
+        "assignee": None,
+        "milestone": milestone,
+        "labels": label if label else [],
+        "state": "open"
+    }
+
+    issue_dict["title"] = task['name']
+    issue_dict["body"] = task["notes"]
+    issue_dict["created_at"] = task["created_at"]
+    issue_dict["updated_at"] = task["modified_at"]
+    issue_dict["closed_at"] = task["completed_at"]
+    if task["completed"]:
+        issue_dict["state"] = "closed"
+    task_assignee = None
+    if task['assignee']:
+        task_assignee = task['assignee']['name']
+    issue_dict['assignee'] = assignee if assignee else task_assignee
+
+    with open(filename, 'w+') as issue_file:
+        simplejson.dump(issue_dict, issue_file)
 
 
 def main():
@@ -47,10 +84,12 @@ def main():
     parser.add_option("-n", "--number", action="store", type="int", dest="number", default=1, help="from what number should issues' ids start")
     parser.add_option("-q", "--quiet", action="store_false", dest="verbose", help="quiet mode")
     parser.add_option("-v", "--verbose", action="store_true", dest="verbose", default=True, help="verbose mode (default)")
-    parser.add_option("-d", "--dictionary", action="store", type="string", dest="dictionary_file", default=None, help="python file containing dictionary for translating Asana users to Github users; "
-                                                                                                                      "by default e-mail addresses are used in Github to search for users")
+    parser.add_option("-d", "--dictionary", action="store", type="string", dest="dictionary_file", default=None, help="file containing python dictionary for translating Asana users to Github users; "
+                                                                                                                      "by default e-mail addresses from Asana are used in Github to search for users")
     parser.add_option("-u", "--user", action="store", type="string", dest="default_user", default=None, help="default name of user which should be user as creator of issue if "
                                                                                                              "dictionary look-up fails (by default it's going to be import requester's name)")
+    parser.add_option("-m", "--milestone", action="store", type="string", dest="milestone", default=None, help="name of milestone to apply")
+    parser.add_option("-l", "--label", action="store", type="string", dest="label", default=None, help='label to apply')
     options, args = parser.parse_args()
 
     if len(args) != 1:
@@ -58,6 +97,7 @@ def main():
 
     asana_api = asana.AsanaAPI(args[0])
     number = options.number
+    label = [] if not options.label else [options.label]
 
     if options.verbose:
         __verbose_print = print
@@ -75,18 +115,28 @@ def main():
     __verbose_print("Project {0} found".format(options.project_name))
 
     __verbose_print("Getting list of tasks")
-    tasks_ids = get_project_tasks(asana_api, project_id, options.copy_completed)
+    tasks = get_project_tasks(asana_api, project_id, options.copy_completed)
+    __verbose_print("Got {0} tasks".format(len(tasks)))
 
-    assignee_dict = {}
-
+    options.directory_name = path.join(options.directory_name, 'issues')
     if not path.exists(options.directory_name):
         os.makedirs(options.directory_name)
 
-    for t in tasks_ids:
-        t_id = t['id']
-        task = asana_api.get_task(t_id)
+    if options.dictionary_file:
+        __verbose_print("Getting user dictionnary from {0}".format(options.dictionary_file))
+        with open(options.dictionary_file) as dict_f:
+            text_d = dict_f.read()
+            creator_dict = defaultdict(lambda: options.default_user, eval(text_d))
+            assignee_dict = defaultdict(lambda: None, eval(text_d))
+        __verbose_print("Dictionary read: {0}".format(text_d))
+    else:
+        creator_dict = defaultdict(lambda: options.default_user)
+        assignee_dict = None
+
+    __verbose_print("Going through tasks")
+    for task in tasks:
         __verbose_print("Writing task '" + task['name'] + "'")
-        stories = asana_api.list_stories(t_id)
+        stories = asana_api.list_stories(task['id'])
         issue_dict = {
             "number": number,
             "title": "",
@@ -96,8 +146,8 @@ def main():
             "closed_at": None,
             "user": None,
             "assignee": None,
-            "milestone": None,
-            "labels": [],
+            "milestone": options.milestone,
+            "labels": label,
             "state": "open"
         }
         issue_dict["title"] = task['name']
@@ -108,24 +158,27 @@ def main():
         if task["completed"]:
             issue_dict["state"] = "closed"
 
-        if task['assignee'] and task['assignee']['name'] in assignee_dict:
-            issue_dict['assignee'] = assignee_dict[task['assignee']['name']]
-        if stories[0]["created_by"]["name"] in assignee_dict:
-            issue_dict["user"] = assignee_dict[stories[0]["created_by"]["name"]]
+        assignee = None
+        if task['assignee']:
+            assignee = assignee_dict[task['assignee']['name']]
+            assignee = assignee if assignee else get_user_email(asana_api, task['assignee']['id'])  # last resort check - email address (Github falls back to importer if email is not in database
 
-        with open(path.join(options.directory_name, '{0}.json'.format(number)), 'w+') as issue_file:
-            simplejson.dump(issue_dict, issue_file)
+        creator = creator_dict[stories[0]["created_by"]["name"]]
+        creator = creator if creator else get_user_email(asana_api, stories[0]["created_by"]["id"])  # last resort check - email address (Github falls back to importer if email is not in database
+        write_task(task, path.join(options.directory_name, '{0}.json'.format(number)), creator, assignee=assignee, milestone=options.milestone, label=label, number=number)
 
         comments_list = []
         for story in stories[1:]:
             if story['type'] == 'comment':
-                user = assignee_dict[story["created_by"]["name"]] if story["created_by"]["name"] in assignee_dict else 'pdmvserv'
+                user = assignee_dict[story["created_by"]["name"]]
+                user = user if user else get_user_email(asana_api, story["created_by"]["id"])  # last resort check - email address (Github falls back to importer if email is not in database
                 __verbose_print("Adding comment by " + user)
                 comments_list.append({"user": user, 'body': story['text'], 'created_at': story['created_at'], 'updated_at': None})
 
         with open(path.join(options.directory_name, '{0}.comments.json'.format(number)), 'w+') as comments_file:
             simplejson.dump(comments_list, comments_file)
         number += 1
+    __verbose_print("Writing finished")
 
 if __name__ == "__main__":
     main()

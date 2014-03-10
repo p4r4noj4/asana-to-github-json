@@ -10,4 +10,4 @@ Script getting all needed data from Asana through Asana API and transforming it 
 
 ## Usage
 
-Program can be used as a command-line script.
+Program can be used as a command-line script, use -h/--help option to see whole specification.
