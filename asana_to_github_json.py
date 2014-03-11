@@ -8,7 +8,7 @@ from os import path
 
 import os
 import simplejson
-
+import shutil
 
 __verbose_print = lambda *a: None
 __script_print = lambda *a: None  # will only print if used as script (important info, cannot be silenced)
@@ -34,7 +34,13 @@ def get_project_id(asana_api, workspace_id, project_name=None):
 
 
 def get_project_tasks(asana_api, project_id, copy_completed=False):
-    return [z for z in reversed([asana_api.get_task(x['id']) for x in asana_api.get_project_tasks(project_id)]) if copy_completed or not z['completed']]
+    completed = ""
+    if not copy_completed:
+        completed = "&completed_since=now"
+    # use the link directly for performance issues
+    # TODO: rewrite to proper method call once the pull request to asana repository is accepted
+    return asana_api._asana('projects/{0}/tasks?include_archived=false&opt_expand=.{1}'.format(project_id, completed))
+    # return [z for z in reversed([asana_api.get_task(x['id']) for x in asana_api.get_project_tasks(project_id)]) if copy_completed or not z['completed']]
 
 
 def get_user_email(asana_api, user_id):
@@ -90,7 +96,21 @@ def main():
                                                                                                              "dictionary look-up fails (by default it's going to be import requester's name)")
     parser.add_option("-m", "--milestone", action="store", type="string", dest="milestone", default=None, help="name of milestone to apply")
     parser.add_option("-l", "--label", action="store", type="string", dest="label", default=None, help='label to apply')
+    parser.add_option("--clean", action="store_true", default=False, dest="clean", help="removes issues directory from the destination directory")
     options, args = parser.parse_args()
+    options.directory_name = path.join(options.directory_name, 'issues')
+
+    if options.verbose:
+        __verbose_print = print
+
+    if options.clean:
+        if path.exists(options.directory_name):
+            shutil.rmtree(options.directory_name)
+            __verbose_print("Directory \"{0}\" cleaned ".format(options.directory_name))
+        else:
+            __verbose_print("Directory \"{0}\" not cleaned as it does not exist".format(options.directory_name))
+        if not args:
+            exit()
 
     if len(args) != 1:
         parser.error("Asana API key missing")
@@ -98,9 +118,6 @@ def main():
     asana_api = asana.AsanaAPI(args[0])
     number = options.number
     label = [] if not options.label else [options.label]
-
-    if options.verbose:
-        __verbose_print = print
 
     __verbose_print("Looking through workspaces")
     workspace_id = get_workspace_id(asana_api, options.workspace_name)
@@ -118,7 +135,6 @@ def main():
     tasks = get_project_tasks(asana_api, project_id, options.copy_completed)
     __verbose_print("Got {0} tasks".format(len(tasks)))
 
-    options.directory_name = path.join(options.directory_name, 'issues')
     if not path.exists(options.directory_name):
         os.makedirs(options.directory_name)
 
@@ -131,10 +147,10 @@ def main():
         __verbose_print("Dictionary read: {0}".format(text_d))
     else:
         creator_dict = defaultdict(lambda: options.default_user)
-        assignee_dict = None
+        assignee_dict = defaultdict(lambda: None)
 
     __verbose_print("Going through tasks")
-    for task in tasks:
+    for task in reversed(tasks):
         __verbose_print("Writing task '" + task['name'] + "'")
         stories = asana_api.list_stories(task['id'])
         issue_dict = {
